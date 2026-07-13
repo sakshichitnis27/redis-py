@@ -6497,6 +6497,33 @@ class SetCommands(CommandsProtocol):
         return self.execute_command("SDIFF", *args, keys=args)
 
     @overload
+    def sdiffcard(
+        self: SyncClientProtocol, numkeys: int, keys: List[KeyT], limit: int = 0
+    ) -> int: ...
+
+    @overload
+    def sdiffcard(
+        self: AsyncClientProtocol, numkeys: int, keys: List[KeyT], limit: int = 0
+    ) -> Awaitable[int]: ...
+
+    def sdiffcard(
+        self, numkeys: int, keys: List[KeyT], limit: int = 0
+    ) -> int | Awaitable[int]:
+        """
+        Return the cardinality of the difference between the first set and all
+        the successive sets specified by ``keys``, without returning the
+        difference itself.
+
+        When LIMIT is provided (defaults to 0 and means unlimited), the returned
+        cardinality is capped at ``limit`` and the server may stop the
+        computation once the capped result is known.
+
+        For more information, see https://redis.io/commands/sdiffcard
+        """
+        args = [numkeys, *keys, "LIMIT", limit]
+        return self.execute_command("SDIFFCARD", *args, keys=keys)
+
+    @overload
     def sdiffstore(
         self: SyncClientProtocol, dest: str, keys: List, *args: List
     ) -> int: ...
@@ -6742,6 +6769,52 @@ class SetCommands(CommandsProtocol):
         """
         args = list_or_args(keys, args)
         return self.execute_command("SUNION", *args, keys=args)
+
+    @overload
+    def sunioncard(
+        self: SyncClientProtocol,
+        numkeys: int,
+        keys: List[KeyT],
+        limit: int = 0,
+        approx: bool = False,
+    ) -> int: ...
+
+    @overload
+    def sunioncard(
+        self: AsyncClientProtocol,
+        numkeys: int,
+        keys: List[KeyT],
+        limit: int = 0,
+        approx: bool = False,
+    ) -> Awaitable[int]: ...
+
+    def sunioncard(
+        self,
+        numkeys: int,
+        keys: List[KeyT],
+        limit: int = 0,
+        approx: bool = False,
+    ) -> int | Awaitable[int]:
+        """
+        Return the cardinality of the union of multiple sets specified by
+        ``keys``, without returning the union itself.
+
+        When ``approx`` is True, the ``APPROX`` option is sent and the server
+        returns an approximate cardinality computed using HyperLogLog.
+
+        When LIMIT is provided (defaults to 0 and means unlimited), the returned
+        cardinality is capped at ``limit``. In exact mode the result equals
+        ``limit`` when the real cardinality exceeds ``limit``; in approximate
+        mode the result will not exceed ``limit``. Options are emitted in the
+        canonical order ``APPROX`` before ``LIMIT``.
+
+        For more information, see https://redis.io/commands/sunioncard
+        """
+        pieces: list = [numkeys, *keys]
+        if approx:
+            pieces.append("APPROX")
+        pieces.extend(["LIMIT", limit])
+        return self.execute_command("SUNIONCARD", *pieces, keys=keys)
 
     @overload
     def sunionstore(
@@ -7757,6 +7830,8 @@ class StreamCommands(CommandsProtocol):
         streams: Dict[KeyT, StreamIdT],
         count: int | None = None,
         block: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> XReadResponse: ...
 
     @overload
@@ -7765,6 +7840,8 @@ class StreamCommands(CommandsProtocol):
         streams: Dict[KeyT, StreamIdT],
         count: int | None = None,
         block: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> Awaitable[XReadResponse]: ...
 
     def xread(
@@ -7772,6 +7849,8 @@ class StreamCommands(CommandsProtocol):
         streams: Dict[KeyT, StreamIdT],
         count: int | None = None,
         block: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> XReadResponse | Awaitable[XReadResponse]:
         """
         Block and monitor multiple streams for new data.
@@ -7779,10 +7858,23 @@ class StreamCommands(CommandsProtocol):
         streams: a dict of stream names to stream IDs, where
                    IDs indicate the last ID already seen.
 
-        count: if set, only return this many items, beginning with the
-               earliest available.
+        count: if set, only return this many items per stream, beginning with
+               the earliest available.
 
         block: number of milliseconds to wait, if nothing already present.
+
+        max_count: if set, cap the total number of entries returned across all
+                   streams combined. Unlike ``count`` (a per-stream limit),
+                   this is a cumulative cap over the whole reply. Must be a
+                   positive integer and, when ``count`` is also set, must be
+                   greater than or equal to ``count``. Requires Redis >= 8.10.0.
+
+        max_size: if set, a soft cap on the total server reply size in bytes
+                  across all streams combined. Measured server-side including
+                  protocol overhead, so it is not an exact application-payload
+                  size guarantee; a single available entry larger than the cap
+                  may still be returned. Must be a positive integer. Requires
+                  Redis >= 8.10.0.
 
         For more information, see https://redis.io/commands/xread
         """
@@ -7797,6 +7889,20 @@ class StreamCommands(CommandsProtocol):
                 raise DataError("XREAD count must be a positive integer")
             pieces.append(b"COUNT")
             pieces.append(str(count))
+        if max_count is not None:
+            if not isinstance(max_count, int) or max_count < 1:
+                raise DataError("XREAD max_count must be a positive integer")
+            if count is not None and max_count < count:
+                raise DataError(
+                    "XREAD max_count must be greater than or equal to count"
+                )
+            pieces.append(b"MAXCOUNT")
+            pieces.append(str(max_count))
+        if max_size is not None:
+            if not isinstance(max_size, int) or max_size < 1:
+                raise DataError("XREAD max_size must be a positive integer")
+            pieces.append(b"MAXSIZE")
+            pieces.append(str(max_size))
         if not isinstance(streams, dict) or len(streams) == 0:
             raise DataError("XREAD streams must be a non empty dict")
         pieces.append(b"STREAMS")
@@ -7829,6 +7935,8 @@ class StreamCommands(CommandsProtocol):
         block: int | None = None,
         noack: bool = False,
         claim_min_idle_time: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> XReadGroupResponse: ...
 
     @overload
@@ -7841,6 +7949,8 @@ class StreamCommands(CommandsProtocol):
         block: int | None = None,
         noack: bool = False,
         claim_min_idle_time: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> Awaitable[XReadGroupResponse]: ...
 
     def xreadgroup(
@@ -7852,6 +7962,8 @@ class StreamCommands(CommandsProtocol):
         block: int | None = None,
         noack: bool = False,
         claim_min_idle_time: int | None = None,
+        max_count: int | None = None,
+        max_size: int | None = None,
     ) -> XReadGroupResponse | Awaitable[XReadGroupResponse]:
         """
         Read from a stream via a consumer group.
@@ -7863,14 +7975,27 @@ class StreamCommands(CommandsProtocol):
         streams: a dict of stream names to stream IDs, where
                IDs indicate the last ID already seen.
 
-        count: if set, only return this many items, beginning with the
-               earliest available.
+        count: if set, only return this many items per stream, beginning with
+               the earliest available.
 
         block: number of milliseconds to wait, if nothing already present.
         noack: do not add messages to the PEL
 
         claim_min_idle_time: accepts an integer type and represents a
                              time interval in milliseconds
+
+        max_count: if set, cap the total number of entries returned across all
+                   streams combined. Unlike ``count`` (a per-stream limit),
+                   this is a cumulative cap over the whole reply. Must be a
+                   positive integer and, when ``count`` is also set, must be
+                   greater than or equal to ``count``. Requires Redis 8.10.0.
+
+        max_size: if set, a soft cap on the total server reply size in bytes
+                  across all streams combined. Measured server-side including
+                  protocol overhead, so it is not an exact application-payload
+                  size guarantee; a single available entry larger than the cap
+                  may still be returned. Must be a positive integer. Requires
+                  Redis 8.10.0.
 
         For more information, see https://redis.io/commands/xreadgroup
         """
@@ -7881,6 +8006,20 @@ class StreamCommands(CommandsProtocol):
                 raise DataError("XREADGROUP count must be a positive integer")
             pieces.append(b"COUNT")
             pieces.append(str(count))
+        if max_count is not None:
+            if not isinstance(max_count, int) or max_count < 1:
+                raise DataError("XREADGROUP max_count must be a positive integer")
+            if count is not None and max_count < count:
+                raise DataError(
+                    "XREADGROUP max_count must be greater than or equal to count"
+                )
+            pieces.append(b"MAXCOUNT")
+            pieces.append(str(max_count))
+        if max_size is not None:
+            if not isinstance(max_size, int) or max_size < 1:
+                raise DataError("XREADGROUP max_size must be a positive integer")
+            pieces.append(b"MAXSIZE")
+            pieces.append(str(max_size))
         if block is not None:
             if not isinstance(block, int) or block < 0:
                 raise DataError("XREADGROUP block must be a non-negative integer")
